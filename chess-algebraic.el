@@ -200,15 +200,80 @@ This regexp handles both long and short form.")
 	 (if (chess-ply-keyword ply :check) "+"
 	   (if (chess-ply-keyword ply :checkmate) "#"))))))
 
-(defun chess-ply-to-algebraic (ply &optional long)
+(defun chess-ply-to-algebraic (ply &optional type)
   "Convert the given PLY to algebraic notation.
-If LONG is non-nil, render the move into long notation."
-  (cl-assert (listp ply))
-  (or (and (not long) (chess-ply-keyword ply :san))
+Optional argument TYPE specifies the kind of algebraic notation to generate.
+`:san' (the default) generates short (or standard) algebraic notation
+\(like \"Nc3\").  `:lan' generates long algebraic notation (like \"Nb1-c3\".
+`:fan' generates figurine algebraic notation (like \"♘c3\".
+Finally, `:numeric' generates ICCF numeric notation (like \"2133\"."
+  (cl-check-type ply (and list (not null)))
+  (cl-check-type type (member nil :san :fan :lan :numeric))
+  (unless type (setq type :san))
+  (or (chess-ply-keyword ply type)
       (and (null (chess-ply-source ply)) "")
-      (let ((move (chess-ply--move-text ply long)))
-	(unless long (chess-ply-set-keyword ply :san move))
-	move)))
+      (chess-ply-set-keyword
+       ply type
+       (or
+	(and (eq type :numeric)
+	     (apply
+	      #'string
+	      (+ (chess-index-file (chess-ply-source ply)) ?1)
+	      (+ (chess-index-rank (logxor (chess-ply-source ply) #o70)) ?1)
+	      (+ (chess-index-file (chess-ply-target ply)) ?1)
+	      (+ (chess-index-rank (logxor (chess-ply-target ply) #o70)) ?1)
+	      (when (chess-ply-keyword ply :promote)
+		(list (+ (cl-position (chess-ply-keyword ply :promote)
+				      '(?Q ?R ?B ?N)) ?1)))))
+	(and (chess-ply-keyword ply :castle) "O-O")
+	(and (chess-ply-keyword ply :long-castle) "O-O-O")
+	(let* ((pos (chess-ply-pos ply))
+	       (from (chess-ply-source ply))
+	       (to (chess-ply-target ply))
+	       (from-piece (chess-pos-piece pos from))
+	       (rank 0) (file 0)
+	       (from-rank (chess-index-rank from))
+	       (from-file (chess-index-file from))
+	       (differentiator (chess-ply-keyword ply :which)))
+	  (unless differentiator
+	    (let ((candidates (chess-search-position pos to from-piece nil t)))
+	      (when (> (length candidates) 1)
+		(dolist (candidate candidates)
+		  (when (= (chess-index-rank candidate) from-rank)
+		    (setq rank (1+ rank)))
+		  (when (= (chess-index-file candidate) from-file)
+		    (setq file (1+ file))))
+		(cond ((= file 1) (setq differentiator (chess-file-to-char from-file)))
+		      ((= rank 1) (setq differentiator (chess-rank-to-char from-rank)))
+		      (t (chess-error 'could-not-diff)))
+		(chess-ply-set-keyword ply :which differentiator))))
+	  (concat
+	   (unless (= (upcase from-piece) ?P)
+	     (char-to-string
+	      (cond ((memq type '(:san :lan)) (upcase from-piece))
+		    ((eq type :fan)
+		     (cdr (assq from-piece chess-algebraic-figurine-pieces))))))
+	   (cond
+	    ((eq type :lan) (chess-index-to-coord from))
+	    (differentiator (char-to-string differentiator))
+	    ((and (not (eq type :lan)) (= (upcase from-piece) ?P)
+		  (/= from-file (chess-index-file to)))
+	     (char-to-string (chess-file-to-char from-file))))
+	   (if (or (/= ?  (chess-pos-piece pos to))
+		   (chess-ply-keyword ply :en-passant))
+	       "x" (if (eq type :lan) "-"))
+	   (chess-index-to-coord to)
+	   (let ((promote (chess-ply-keyword ply :promote)))
+	     (if promote
+		 (concat "=" (char-to-string
+			      (cond ((eq type :fan)
+				     (cdr (assq (if (chess-pos-side-to-move pos)
+						    promote
+						  (downcase promote))
+						chess-algebraic-figurine-pieces)))
+				    (t promote))))))
+	   (if (chess-ply-keyword ply :check) "+"
+	     (if (chess-ply-keyword ply :checkmate) "#"))))))))
 
 (provide 'chess-algebraic)
 
